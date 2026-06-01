@@ -11,13 +11,13 @@ module Native =
     [<Literal>]
     let ERROR_INSUFFICIENT_BUFFER = 122
 
-    [<DllImport("kernel32.dll", SetLastError = true)>]
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)>]
     extern bool GetLogicalProcessorInformationEx(int relationshipType, nativeint buffer, uint32& returnedLength)
 
-    [<DllImport("kernel32.dll")>]
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll")>]
     extern nativeint GetCurrentThread()
 
-    [<DllImport("kernel32.dll", SetLastError = true)>]
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)>]
     extern nativeint SetThreadAffinityMask(nativeint hThread, nativeint dwThreadAffinityMask)
 
 module PowerPlan =
