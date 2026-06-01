@@ -245,7 +245,8 @@ type BenchmarkResult =
       Samples: int64
       Pi: float
       Elapsed: TimeSpan
-      ThroughputM: float }
+      ThroughputM: float
+      ThroughputPerThreadM: float }
 
 let splitSamples (totalSamples: int64) (workers: int) =
     let baseN = totalSamples / int64 workers
@@ -272,6 +273,7 @@ let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: in
         let inside = tasks |> Array.sumBy (fun t -> t.Result)
         let pi = 4.0 * float inside / float totalSamples
         let throughputM = float totalSamples / sw.Elapsed.TotalSeconds / 1_000_000.0
+        let throughputPerThreadM = throughputM / float logicalProcessors.Length
 
         Some
             { Name = name
@@ -279,7 +281,8 @@ let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: in
               Samples = totalSamples
               Pi = pi
               Elapsed = sw.Elapsed
-              ThroughputM = throughputM }
+              ThroughputM = throughputM
+              ThroughputPerThreadM = throughputPerThreadM }
 
 let parseArgInt64 (args: string array) (name: string) (defaultValue: int64) =
     let idx = args |> Array.tryFindIndex ((=) name)
@@ -293,13 +296,14 @@ let parseArgInt64 (args: string array) (name: string) (defaultValue: int64) =
 
 let printResult (r: BenchmarkResult) =
     printfn
-        "%-16s %3d workers | samples=%11d | pi=%1.10f | time=%8.3fs | throughput=%8.2f M/s"
+        "%-16s %3d workers | samples=%11d | pi=%1.10f | time=%8.3fs | throughput=%8.2f M/s | per-thread=%7.2f M/s"
         r.Name
         r.Workers
         r.Samples
         r.Pi
         r.Elapsed.TotalSeconds
         r.ThroughputM
+        r.ThroughputPerThreadM
 
 [<EntryPoint>]
 let main argv =
