@@ -56,6 +56,15 @@ type CoreTopology =
     { EfficiencyClass: byte
       LogicalProcessors: int array }
 
+type PEClassification =
+    { PClass: byte
+      EClass: byte
+      PCoreCount: int
+      ECoreCount: int
+      POneThreadPerCore: int array
+      PAllLogical: int array
+      EAllLogical: int array }
+
 module CpuTopology =
     let private collectSetBits64 (mask: uint64) =
         [| for bit in 0..63 do
@@ -118,29 +127,85 @@ module CpuTopology =
         finally
             Marshal.FreeHGlobal(buffer)
 
-    let classifyPE () =
-        let tops = getCoreTopologies ()
-        let byClass = Dictionary<byte, ResizeArray<int>>()
+    let private collectByClass (tops: CoreTopology array) =
+        let byClass = Dictionary<byte, ResizeArray<int array>>()
 
         for t in tops do
-            if not (byClass.ContainsKey(t.EfficiencyClass)) then
-                byClass[t.EfficiencyClass] <- ResizeArray<int>()
+            let logical = t.LogicalProcessors |> Array.distinct |> Array.sort
 
-            for lp in t.LogicalProcessors do
-                byClass[t.EfficiencyClass].Add(lp)
+            if logical.Length > 0 then
+                if not (byClass.ContainsKey(t.EfficiencyClass)) then
+                    byClass[t.EfficiencyClass] <- ResizeArray<int array>()
 
+                byClass[t.EfficiencyClass].Add(logical)
+
+        byClass
+
+    let private toLogicalSet (coreLogicalSets: int array array) =
+        coreLogicalSets |> Array.collect id |> Array.distinct |> Array.sort
+
+    let private toOneThreadSet (coreLogicalSets: int array array) =
+        coreLogicalSets
+        |> Array.choose (fun xs -> if xs.Length > 0 then Some xs[0] else None)
+        |> Array.distinct
+        |> Array.sort
+
+    let classifyPE () =
+        let tops = getCoreTopologies ()
+        let byClass = collectByClass tops
         let classes = byClass.Keys |> Seq.sort |> Seq.toArray
 
-        if classes.Length < 2 then
-            printfn "[CPU] Hybrid P/E topology not detected (only one efficiency class found)."
-            [||], [||]
-        else
-            let pClass = classes[0]
-            let eClass = classes[classes.Length - 1]
+        let mkResult pClass eClass =
+            let pCoreSets = byClass[pClass] |> Seq.toArray
+            let eCoreSets = byClass[eClass] |> Seq.toArray
 
-            let pCores = byClass[pClass] |> Seq.distinct |> Seq.sort |> Seq.toArray
-            let eCores = byClass[eClass] |> Seq.distinct |> Seq.sort |> Seq.toArray
-            pCores, eCores
+            let pLogical = toLogicalSet pCoreSets
+            let eLogical = toLogicalSet eCoreSets
+            let pOneThread = toOneThreadSet pCoreSets
+
+            Some
+                { PClass = pClass
+                  EClass = eClass
+                  PCoreCount = pCoreSets.Length
+                  ECoreCount = eCoreSets.Length
+                  POneThreadPerCore = pOneThread
+                  PAllLogical = pLogical
+                  EAllLogical = eLogical }
+
+        // Explicit mapping requested by user for this machine: EfficiencyClass 1 => P, 0 => E.
+        if byClass.ContainsKey(1uy) && byClass.ContainsKey(0uy) then
+            mkResult 1uy 0uy
+        elif classes.Length < 2 then
+            printfn "[CPU] Hybrid P/E topology not detected (only one efficiency class found)."
+            None
+        else
+            // Fallback for machines with different class values: infer P by larger SMT ratio.
+            let infos =
+                classes
+                |> Array.map (fun c ->
+                    let coreSets = byClass[c] |> Seq.toArray
+                    let logicalCount = coreSets |> Array.collect id |> Array.distinct |> Array.length
+                    let coreCount = coreSets.Length
+
+                    let ratio =
+                        if coreCount = 0 then
+                            0.0
+                        else
+                            float logicalCount / float coreCount
+
+                    c, ratio, logicalCount)
+
+            let pClass =
+                infos
+                |> Array.maxBy (fun (c, ratio, logical) -> ratio, logical, -int c)
+                |> fun (c, _, _) -> c
+
+            let eClass =
+                infos
+                |> Array.minBy (fun (c, ratio, logical) -> ratio, logical, int c)
+                |> fun (c, _, _) -> c
+
+            mkResult pClass eClass
 
 module Affinity =
     let tryBindToLogicalProcessor (logicalProcessor: int) =
@@ -246,20 +311,33 @@ let main argv =
 
     PowerPlan.setHighPerformance ()
 
-    let pCores, eCores = CpuTopology.classifyPE ()
-    let mixed = Array.append pCores eCores |> Array.distinct |> Array.sort
-
-    printfn "[CPU] P logical processors: %A" pCores
-    printfn "[CPU] E logical processors: %A" eCores
-    printfn "[CPU] Mixed logical processors: %A" mixed
-    printfn ""
+    let topoOpt = CpuTopology.classifyPE ()
 
     let cases =
-        [| "P cores parallel", pCores
-           "E cores parallel", eCores
-           "P/E mixed parallel", mixed
-           "Single P core", (if pCores.Length > 0 then [| pCores[0] |] else [||])
-           "Single E core", (if eCores.Length > 0 then [| eCores[0] |] else [||]) |]
+        match topoOpt with
+        | None -> [||]
+        | Some topo ->
+            let pNp = topo.POneThreadPerCore
+            let p2Np = topo.PAllLogical
+            let eNe = topo.EAllLogical
+            let mixed = Array.append p2Np eNe |> Array.distinct |> Array.sort
+
+            printfn "[CPU] EfficiencyClass mapping: P=%d, E=%d" topo.PClass topo.EClass
+            printfn "[CPU] P one-thread set (Np): %A" pNp
+            printfn "[CPU] P all-logical set (2*Np): %A" p2Np
+            printfn "[CPU] E logical set (Ne): %A" eNe
+            printfn "[CPU] Core count: Np=%d, Ne=%d" topo.PCoreCount topo.ECoreCount
+            printfn "[CPU] Check: Np + Ne = %d" (topo.PCoreCount + topo.ECoreCount)
+            printfn "[CPU] Check: 2*Np + Ne = %d" ((2 * topo.PCoreCount) + topo.ECoreCount)
+            printfn "[CPU] Mixed logical processors: %A" mixed
+            printfn ""
+
+            [| "P cores Np threads", pNp
+               "P cores 2*Np threads", p2Np
+               "E cores Ne threads", eNe
+               "P/E mixed (2*Np+Ne)", mixed
+               "Single P core", (if pNp.Length > 0 then [| pNp[0] |] else [||])
+               "Single E core", (if eNe.Length > 0 then [| eNe[0] |] else [||]) |]
 
     printfn "Results"
     printfn "-------"
