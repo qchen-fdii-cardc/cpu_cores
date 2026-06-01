@@ -375,9 +375,22 @@ let parseArgInt (args: string array) (name: string) (defaultValue: int) =
         | _ -> defaultValue
     | _ -> defaultValue
 
+let printTableHeader () =
+    printfn
+        "%-22s %7s %3s %24s %22s %22s %22s"
+        "Case"
+        "Workers"
+        "n"
+        "Pi (mean +/- sd)"
+        "Time s (mean +/- sd)"
+        "Throughput M/s"
+        "Per-thread M/s"
+
+    printfn "%s" (String.replicate 132 "-")
+
 let printResult (r: BenchmarkStats) =
     printfn
-        "%-20s %3d workers | n=%2d | pi=%1.10f +/- %1.10f | time=%7.3f +/- %6.3f s | throughput=%8.2f +/- %7.2f M/s | per-thread=%7.2f +/- %6.2f M/s"
+        "%-22s %7d %3d %11.8f +/- %-10.8f %9.4f +/- %-8.4f %9.2f +/- %-8.2f %9.2f +/- %-8.2f"
         r.Name
         r.Workers
         r.Repeats
@@ -432,6 +445,7 @@ let main argv =
 
     printfn "Results"
     printfn "-------"
+    printTableHeader ()
 
     let mutable ranAny = false
 
