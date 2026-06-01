@@ -248,13 +248,27 @@ type BenchmarkResult =
       ThroughputM: float
       ThroughputPerThreadM: float }
 
+type BenchmarkStats =
+    { Name: string
+      Workers: int
+      Samples: int64
+      Repeats: int
+      PiMean: float
+      PiStd: float
+      TimeMeanS: float
+      TimeStdS: float
+      ThroughputMeanM: float
+      ThroughputStdM: float
+      ThroughputPerThreadMeanM: float
+      ThroughputPerThreadStdM: float }
+
 let splitSamples (totalSamples: int64) (workers: int) =
     let baseN = totalSamples / int64 workers
     let extra = totalSamples % int64 workers
 
     [| for i in 0 .. workers - 1 -> baseN + (if int64 i < extra then 1L else 0L) |]
 
-let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: int64) =
+let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: int64) (runIndex: int) =
     if logicalProcessors.Length = 0 then
         None
     else
@@ -264,7 +278,7 @@ let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: in
         let tasks =
             logicalProcessors
             |> Array.mapi (fun i lp ->
-                let seed = 1337 + (i * 7919)
+                let seed = 1337 + (runIndex * 104_729) + (i * 7_919)
                 MonteCarlo.runWorker chunks[i] lp seed)
 
         tasks |> Array.map (fun t -> t :> Task) |> Task.WaitAll
@@ -284,6 +298,63 @@ let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: in
               ThroughputM = throughputM
               ThroughputPerThreadM = throughputPerThreadM }
 
+let meanAndStd (values: float array) =
+    if values.Length = 0 then
+        nan, nan
+    elif values.Length = 1 then
+        values[0], 0.0
+    else
+        let mean = values |> Array.average
+
+        let variance =
+            values
+            |> Array.sumBy (fun v ->
+                let d = v - mean
+                d * d)
+            |> fun s -> s / float (values.Length - 1)
+
+        mean, sqrt variance
+
+let runBenchmarkStats (name: string) (logicalProcessors: int array) (totalSamples: int64) (repeats: int) =
+    if logicalProcessors.Length = 0 then
+        None
+    else
+        let rounds = max 1 repeats
+
+        let results =
+            [| for runIndex in 0 .. rounds - 1 do
+                   match runBenchmark name logicalProcessors totalSamples runIndex with
+                   | Some r -> yield r
+                   | None -> () |]
+
+        if results.Length = 0 then
+            None
+        else
+            let piMean, piStd = results |> Array.map (fun r -> r.Pi) |> meanAndStd
+
+            let timeMeanS, timeStdS =
+                results |> Array.map (fun r -> r.Elapsed.TotalSeconds) |> meanAndStd
+
+            let throughputMeanM, throughputStdM =
+                results |> Array.map (fun r -> r.ThroughputM) |> meanAndStd
+
+            let throughputPerThreadMeanM, throughputPerThreadStdM =
+                results |> Array.map (fun r -> r.ThroughputPerThreadM) |> meanAndStd
+
+            Some
+                { Name = name
+                  Workers = logicalProcessors.Length
+                  Samples = totalSamples
+                  Repeats = rounds
+                  PiMean = piMean
+                  PiStd = piStd
+                  TimeMeanS = timeMeanS
+                  TimeStdS = timeStdS
+                  ThroughputMeanM = throughputMeanM
+                  ThroughputStdM = throughputStdM
+                  ThroughputPerThreadMeanM = throughputPerThreadMeanM
+                  ThroughputPerThreadStdM = throughputPerThreadStdM }
+
 let parseArgInt64 (args: string array) (name: string) (defaultValue: int64) =
     let idx = args |> Array.tryFindIndex ((=) name)
 
@@ -294,23 +365,39 @@ let parseArgInt64 (args: string array) (name: string) (defaultValue: int64) =
         | _ -> defaultValue
     | _ -> defaultValue
 
-let printResult (r: BenchmarkResult) =
+let parseArgInt (args: string array) (name: string) (defaultValue: int) =
+    let idx = args |> Array.tryFindIndex ((=) name)
+
+    match idx with
+    | Some i when i + 1 < args.Length ->
+        match Int32.TryParse(args[i + 1]) with
+        | true, v when v > 0 -> v
+        | _ -> defaultValue
+    | _ -> defaultValue
+
+let printResult (r: BenchmarkStats) =
     printfn
-        "%-16s %3d workers | samples=%11d | pi=%1.10f | time=%8.3fs | throughput=%8.2f M/s | per-thread=%7.2f M/s"
+        "%-20s %3d workers | n=%2d | pi=%1.10f +/- %1.10f | time=%7.3f +/- %6.3f s | throughput=%8.2f +/- %7.2f M/s | per-thread=%7.2f +/- %6.2f M/s"
         r.Name
         r.Workers
-        r.Samples
-        r.Pi
-        r.Elapsed.TotalSeconds
-        r.ThroughputM
-        r.ThroughputPerThreadM
+        r.Repeats
+        r.PiMean
+        r.PiStd
+        r.TimeMeanS
+        r.TimeStdS
+        r.ThroughputMeanM
+        r.ThroughputStdM
+        r.ThroughputPerThreadMeanM
+        r.ThroughputPerThreadStdM
 
 [<EntryPoint>]
 let main argv =
     let samples = parseArgInt64 argv "--samples" 50_000_000L
+    let repeats = parseArgInt argv "--repeats" 20
 
     printfn "CPU P-core / E-core Monte Carlo Benchmark"
     printfn "Samples per benchmark: %d" samples
+    printfn "Repeats per case: %d" repeats
     printfn ""
 
     PowerPlan.setHighPerformance ()
@@ -349,7 +436,7 @@ let main argv =
     let mutable ranAny = false
 
     for name, lps in cases do
-        match runBenchmark name lps samples with
+        match runBenchmarkStats name lps samples repeats with
         | Some r ->
             ranAny <- true
             printResult r
