@@ -12,11 +12,7 @@ module Native =
     let ERROR_INSUFFICIENT_BUFFER = 122
 
     [<DllImport("kernel32.dll", SetLastError = true)>]
-    extern bool GetLogicalProcessorInformationEx(
-        int relationshipType,
-        nativeint buffer,
-        uint32& returnedLength
-    )
+    extern bool GetLogicalProcessorInformationEx(int relationshipType, nativeint buffer, uint32& returnedLength)
 
     [<DllImport("kernel32.dll")>]
     extern nativeint GetCurrentThread()
@@ -56,22 +52,21 @@ module PowerPlan =
         else
             printfn "[Power] Some power settings could not be applied. Try running as Administrator."
 
-type CoreTopology = {
-    EfficiencyClass: byte
-    LogicalProcessors: int array
-}
+type CoreTopology =
+    { EfficiencyClass: byte
+      LogicalProcessors: int array }
 
 module CpuTopology =
     let private collectSetBits64 (mask: uint64) =
-        [|
-            for bit in 0 .. 63 do
-                if ((mask >>> bit) &&& 1UL) = 1UL then
-                    bit
-        |]
+        [| for bit in 0..63 do
+               if ((mask >>> bit) &&& 1UL) = 1UL then
+                   bit |]
 
     let getCoreTopologies () =
         let mutable bytesRequired = 0u
-        let ok = Native.GetLogicalProcessorInformationEx(Native.RelationProcessorCore, nativeint 0, &bytesRequired)
+
+        let ok =
+            Native.GetLogicalProcessorInformationEx(Native.RelationProcessorCore, nativeint 0, &bytesRequired)
 
         if ok then
             failwith "Unexpected success querying logical processor info with empty buffer."
@@ -84,7 +79,8 @@ module CpuTopology =
         let buffer = Marshal.AllocHGlobal(int bytesRequired)
 
         try
-            let ok2 = Native.GetLogicalProcessorInformationEx(Native.RelationProcessorCore, buffer, &bytesRequired)
+            let ok2 =
+                Native.GetLogicalProcessorInformationEx(Native.RelationProcessorCore, buffer, &bytesRequired)
 
             if not ok2 then
                 let err2 = Marshal.GetLastWin32Error()
@@ -103,17 +99,18 @@ module CpuTopology =
                     let groupCount = int (uint16 (Marshal.ReadInt16(buffer, offset + 30)))
 
                     let logical =
-                        [|
-                            for g in 0 .. groupCount - 1 do
-                                let baseOff = offset + 32 + (g * 16)
-                                let mask = uint64 (Marshal.ReadInt64(buffer, baseOff))
-                                let group = int (uint16 (Marshal.ReadInt16(buffer, baseOff + 8)))
+                        [| for g in 0 .. groupCount - 1 do
+                               let baseOff = offset + 32 + (g * 16)
+                               let mask = uint64 (Marshal.ReadInt64(buffer, baseOff))
+                               let group = int (uint16 (Marshal.ReadInt16(buffer, baseOff + 8)))
 
-                                if group = 0 then
-                                    yield! collectSetBits64 mask
-                        |]
+                               if group = 0 then
+                                   yield! collectSetBits64 mask |]
 
-                    tops.Add({ EfficiencyClass = efficiency; LogicalProcessors = logical })
+                    tops.Add(
+                        { EfficiencyClass = efficiency
+                          LogicalProcessors = logical }
+                    )
 
                 offset <- offset + size
 
@@ -177,23 +174,19 @@ module MonteCarlo =
             TaskCreationOptions.LongRunning
         )
 
-type BenchmarkResult = {
-    Name: string
-    Workers: int
-    Samples: int64
-    Pi: float
-    Elapsed: TimeSpan
-    ThroughputM: float
-}
+type BenchmarkResult =
+    { Name: string
+      Workers: int
+      Samples: int64
+      Pi: float
+      Elapsed: TimeSpan
+      ThroughputM: float }
 
 let splitSamples (totalSamples: int64) (workers: int) =
     let baseN = totalSamples / int64 workers
     let extra = totalSamples % int64 workers
 
-    [|
-        for i in 0 .. workers - 1 ->
-            baseN + (if int64 i < extra then 1L else 0L)
-    |]
+    [| for i in 0 .. workers - 1 -> baseN + (if int64 i < extra then 1L else 0L) |]
 
 let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: int64) =
     if logicalProcessors.Length = 0 then
@@ -208,21 +201,20 @@ let runBenchmark (name: string) (logicalProcessors: int array) (totalSamples: in
                 let seed = 1337 + (i * 7919)
                 MonteCarlo.runWorker chunks[i] lp seed)
 
-        Task.WaitAll(tasks)
+        tasks |> Array.map (fun t -> t :> Task) |> Task.WaitAll
         sw.Stop()
 
         let inside = tasks |> Array.sumBy (fun t -> t.Result)
         let pi = 4.0 * float inside / float totalSamples
         let throughputM = float totalSamples / sw.Elapsed.TotalSeconds / 1_000_000.0
 
-        Some {
-            Name = name
-            Workers = logicalProcessors.Length
-            Samples = totalSamples
-            Pi = pi
-            Elapsed = sw.Elapsed
-            ThroughputM = throughputM
-        }
+        Some
+            { Name = name
+              Workers = logicalProcessors.Length
+              Samples = totalSamples
+              Pi = pi
+              Elapsed = sw.Elapsed
+              ThroughputM = throughputM }
 
 let parseArgInt64 (args: string array) (name: string) (defaultValue: int64) =
     let idx = args |> Array.tryFindIndex ((=) name)
@@ -235,7 +227,14 @@ let parseArgInt64 (args: string array) (name: string) (defaultValue: int64) =
     | _ -> defaultValue
 
 let printResult (r: BenchmarkResult) =
-    printfn "% -16s %3d workers | samples=%11d | pi=%1.10f | time=%8.3fs | throughput=%8.2f M/s" r.Name r.Workers r.Samples r.Pi r.Elapsed.TotalSeconds r.ThroughputM
+    printfn
+        "%-16s %3d workers | samples=%11d | pi=%1.10f | time=%8.3fs | throughput=%8.2f M/s"
+        r.Name
+        r.Workers
+        r.Samples
+        r.Pi
+        r.Elapsed.TotalSeconds
+        r.ThroughputM
 
 [<EntryPoint>]
 let main argv =
@@ -272,11 +271,9 @@ let main argv =
         | Some r ->
             ranAny <- true
             printResult r
-        | None ->
-            printfn "% -16s skipped (no available logical processors)" name
+        | None -> printfn "%-16s skipped (no available logical processors)" name
 
     if not ranAny then
         printfn "No benchmark case could run. This machine may not expose hybrid P/E core topology."
 
     0
-
